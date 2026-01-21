@@ -1,4 +1,7 @@
 requests
 beautifulsoup4
+flask
 lxml
 html5lib
+selenium
+webdriver-manager

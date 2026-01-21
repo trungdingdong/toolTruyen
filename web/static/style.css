@@ -1,0 +1,13 @@
+:root{--purple:#6a3fb5;--light:#f7f3ff;--white:#ffffff;--muted:#6b5fa6}
+html,body{height:100%;margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,var(--light),#fff)}
+.container{max-width:900px;margin:24px auto;padding:20px;background:var(--white);border-radius:10px;box-shadow:0 6px 24px rgba(106,63,181,0.12)}
+header h1{color:var(--purple);margin:0}
+.subtitle{color:var(--muted);margin:4px 0 12px}
+label{display:block;margin-bottom:6px;color:var(--muted)}
+input[type=text]{width:100%;padding:10px;border:1px solid #e6e0ff;border-radius:6px;margin-bottom:10px}
+.buttons{display:flex;gap:8px;margin-bottom:12px}
+button{background:var(--purple);color:var(--white);border:none;padding:8px 12px;border-radius:6px;cursor:pointer}
+button[disabled]{opacity:0.6}
+section h2{margin:8px 0}
+.log{background:#dedee3;border:1px solid #efe8ff;padding:12px;height:300px;overflow:auto;border-radius:6px}
+footer{margin-top:12px;color:#888}

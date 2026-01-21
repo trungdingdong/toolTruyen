@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>toolTruyen - Web UI</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>toolTruyen</h1>
+      <p class="subtitle">Downloader</p>
+    </header>
+
+    <main>
+      <label for="novelUrl">Link truyện (trang danh sách chương hoặc trang truyện):</label>
+      <input id="novelUrl" type="text" placeholder="https://..." />
+
+      <div class="buttons">
+        <button id="loadChaptersBtn">Load chapters</button>
+        <button id="startBtn" disabled>Start</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="clearLogBtn">Clear log</button>
+      </div>
+
+      <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
+        <div><strong>Tổng chương:</strong> <span id="totalCount">0</span></div>
+        <div style="flex:1">
+          <label>Chọn khoảng chương</label>
+          <div style="display:flex; gap:8px;">
+            <select id="startSel" style="flex:1"></select>
+            <select id="endSel" style="flex:1"></select>
+          </div>
+        </div>
+      </div>
+
+      <section>
+        <h2>Log</h2>
+        <div id="log" class="log"></div>
+      </section>
+    </main>
+
+    <footer>
+      <small>thanhtrug</small>
+    </footer>
+  </div>
+
+<script>
+let currentJob = null;
+let pollTimer = null;
+
+function log(msg){
+  const el = document.getElementById('log');
+  el.textContent += msg + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+document.getElementById('loadChaptersBtn').addEventListener('click', async ()=>{
+  const url = document.getElementById('novelUrl').value.trim();
+  if(!url){ alert('Nhập URL'); return; }
+  log('⏳ Đang tải danh sách chương...');
+  try{
+    const res = await fetch('/chapters', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url})
+    });
+    const data = await res.json();
+    if(!res.ok){ log('❌ ' + (data.error || 'Lỗi')); return; }
+    const chapters = data.chapters || [];
+    const startSel = document.getElementById('startSel');
+    const endSel = document.getElementById('endSel');
+    startSel.innerHTML = '';
+    endSel.innerHTML = '';
+    document.getElementById('totalCount').textContent = (data.total || chapters.length);
+    chapters.forEach(c=>{
+      const opt = document.createElement('option');
+      opt.value = c.index;
+      opt.text = `${c.index}. ${c.title}`;
+      startSel.appendChild(opt.cloneNode(true));
+      endSel.appendChild(opt.cloneNode(true));
+    });
+    if(chapters.length>0){
+      startSel.selectedIndex = 0;
+      endSel.selectedIndex = chapters.length-1;
+      document.getElementById('startBtn').disabled = false;
+      log(`✅ Tìm thấy ${chapters.length} chương.`);
+    } else {
+      log('⚠️ Không tìm thấy chương.');
+    }
+  }catch(err){
+    log('❌ Lỗi khi load chapters: ' + err);
+  }
+});
+
+document.getElementById('startBtn').addEventListener('click', async ()=>{
+  const url = document.getElementById('novelUrl').value.trim();
+  if(!url){ alert('Nhập URL'); return; }
+  const start = document.getElementById('startSel').value;
+  const end = document.getElementById('endSel').value;
+  log('▶️ Bắt đầu job...');
+  try{
+    const res = await fetch('/start', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url, start: parseInt(start), end: parseInt(end)})
+    });
+    const data = await res.json();
+    if(!res.ok){ log('❌ ' + (data.error || 'Lỗi start')); return; }
+    currentJob = data.job_id;
+    document.getElementById('stopBtn').disabled = false;
+    document.getElementById('startBtn').disabled = true;
+    pollLogs();
+  }catch(err){
+    log('❌ Lỗi khi start: ' + err);
+  }
+});
+
+document.getElementById('stopBtn').addEventListener('click', async ()=>{
+  if(!currentJob) return;
+  await fetch('/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job: currentJob})});
+  log('⏹️ Stop requested.');
+  document.getElementById('stopBtn').disabled = true;
+});
+
+document.getElementById('clearLogBtn').addEventListener('click', ()=>{ document.getElementById('log').innerText = ''; });
+
+async function pollLogs(){
+  if(!currentJob) return;
+  try{
+    const res = await fetch('/logs?job=' + encodeURIComponent(currentJob));
+    const data = await res.json();
+    if(res.ok && data.logs){
+      for(const it of data.logs){
+        if(it === '__DONE__'){
+          log('✅ Job hoàn tất.');
+          currentJob = null;
+          document.getElementById('stopBtn').disabled = true;
+          document.getElementById('startBtn').disabled = false;
+          return;
+        }
+        log(it);
+      }
+    }
+  }catch(e){
+    log('❌ Lỗi poll logs: ' + e);
+  }
+  setTimeout(pollLogs, 1000);
+}
+
+function updateEndOptions(){
+  const startVal = parseInt(document.getElementById('startSel').value || '1', 10);
+  const endSel = document.getElementById('endSel');
+  for(let i=0;i<endSel.options.length;i++){
+    const opt = endSel.options[i];
+    const v = parseInt(opt.value, 10);
+    opt.disabled = v < startVal;
+  }
+  if(parseInt(endSel.value || '0', 10) < startVal){
+    endSel.value = String(startVal);
+  }
+}
+
+document.getElementById('startSel').addEventListener('change', updateEndOptions);
+document.getElementById('endSel').addEventListener('change', function(){
+  const sv = parseInt(document.getElementById('startSel').value||'1',10);
+  const ev = parseInt(this.value||'1',10);
+  if(ev < sv) this.value = sv;
+});
+</script>
+</body>
+</html>

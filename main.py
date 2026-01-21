@@ -1,12 +1,15 @@
 import requests
+import hashlib
 from bs4 import BeautifulSoup
 import time
 import random
-import re # Thư viện xử lý Regex để lọc tên file
+import re 
 from urllib.parse import urljoin
+import os
+import time as _time
 
 # ================= CẤU HÌNH =================
-# Link chương đầu tiên
+# Mặc định START_URL dùng khi chạy trực tiếp
 START_URL = "LINK_CHUONG_DAU_TIEN"
 
 HEADERS = {
@@ -18,14 +21,279 @@ HEADERS = {
 def clean_filename(name):
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
-def download_novel():
-    current_url = START_URL
+
+def get_chapter_list(novel_url):
+    """Return list of chapters as [{'title':..., 'url': ...}, ...]
+
+    Tries several selectors: 'a.chapter-name' first, then elements under '.volume-name',
+    then a fallback scanning links containing 'chapter' or 'chuong'.
+    """
+    try:
+        # If caller passed an explicit AJAX path (/book/index?...), call it directly
+        if '/book/index' in novel_url:
+            resp = requests.get(novel_url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+        else:
+            resp = requests.get(novel_url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Không tải được trang truyện: {e}")
+
+    soup = BeautifulSoup(resp.text, 'html.parser')
+
+    # Prefer common selectors. Several sites use different structures:
+    # - <a class="chapter-name">...
+    # - <li class="chapter-name"><a class="truncate" href="...">...</a></li>
+    # Try them in order and keep fallback options.
+    chapter_tags = soup.select('a.chapter-name') or []
+
+    if not chapter_tags:
+        # handle the pattern you provided: li.chapter-name > a.truncate
+        chapter_tags = soup.select('li.chapter-name a.truncate') or []
+
+    # fallback: find within volume containers
+    if not chapter_tags:
+        vols = soup.select('.volume-name')
+        for vol in vols:
+            for a in vol.find_all('a', href=True):
+                chapter_tags.append(a)
+
+    # final fallback: scan all links for keywords (chapter/chuong)
+    if not chapter_tags:
+        for a in soup.find_all('a', href=True):
+            href = a['href'].lower()
+            text = (a.get_text() or '').lower()
+            if 'chapter' in href or 'chuong' in href or 'chương' in text:
+                chapter_tags.append(a)
+
+    # If only 1 or 0 chapters found, it's likely a placeholder — try AJAX / Selenium
+    needs_more_fallback = len(chapter_tags) <= 1
+    
+    # For truyenwikidich.net, ALWAYS try AJAX because initial selectors find navigation links, not real chapters
+    is_truyenwikidich = 'truyenwikidich.net' in novel_url
+    if is_truyenwikidich:
+        needs_more_fallback = True  # Force AJAX approach
+        chapter_tags = []  # Clear navigation links
+
+    # If still nothing (or just 1 placeholder), try to call the site's AJAX endpoint.
+    if needs_more_fallback:
+        # 1) If the page contains an explicit /book/index?... string (as seen in DevTools), call it directly
+        m_explicit = re.search(r"(/book/index\?[^'\"\s]+)", resp.text)
+        if m_explicit:
+            ajax_path = m_explicit.group(1)
+            ajax_url = urljoin(novel_url, ajax_path)
+            try:
+                r = requests.get(ajax_url, headers=HEADERS, timeout=10)
+                if r.status_code == 200 and r.text:
+                    s2 = BeautifulSoup(r.text, 'html.parser')
+                    chapter_tags = s2.select('li.chapter-name a.truncate') or s2.select('a.chapter-name') or chapter_tags
+            except Exception:
+                pass
+
+        # 2) fallback: try to extract bookId / signKey from the page and calculate sign
+        if len(chapter_tags) <= 1:
+            book_id = None
+            sign_key = None
+            sign_val = None
+            start_val = 0
+            size_val = 2000
+
+            # data-book attributes appear often on page
+            m = re.search(r"data-book\s*=\s*['\"]([0-9a-fA-F]+)['\"]", resp.text)
+            if m:
+                book_id = m.group(1)
+
+            # fallback: look for bookId in JS assignment
+            if not book_id:
+                m = re.search(r"bookId\s*[:=]\s*['\"]([0-9a-fA-F]+)['\"]", resp.text)
+                if m:
+                    book_id = m.group(1)
+
+            m = re.search(r"signKey\s*[:=]\s*['\"]([0-9a-fA-F]+)['\"]", resp.text)
+            if m:
+                sign_key = m.group(1)
+
+            # Always calculate sign using: sign = SHA256(fuzzySign(signKey + start + size))
+            # fuzzySign rotates string at position 60
+            if sign_key and len(sign_key) >= 60:
+                combined = sign_key + str(start_val) + str(size_val)
+                fuzzy = combined[60:] + combined[:60]  # fuzzySign
+                sign_val = hashlib.sha256(fuzzy.encode('utf-8')).hexdigest()
+
+            if book_id and sign_key and sign_val:
+                ajax_url = urljoin(novel_url, '/book/index')
+                params = {
+                    'bookId': book_id,
+                    'start': start_val,
+                    'size': size_val,
+                    'signKey': sign_key,
+                    'sign': sign_val
+                }
+
+                try:
+                    r = requests.get(ajax_url, headers=HEADERS, params=params, timeout=10)
+                    if r.status_code == 200 and r.text:
+                        s2 = BeautifulSoup(r.text, 'html.parser')
+                        new_tags = s2.select('li.chapter-name a.truncate') or s2.select('a.chapter-name')
+                        if new_tags:
+                            chapter_tags = new_tags
+                except Exception:
+                    pass
+
+    # Final fallback: render the page with a headless browser (Selenium) and extract DOM
+    if needs_more_fallback and len(chapter_tags) <= 1:
+        try:
+            # lazy import selenium to avoid hard dependency if not needed
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            from webdriver_manager.chrome import ChromeDriverManager
+
+            opts = Options()
+            try:
+                opts.add_argument('--headless=new')
+            except Exception:
+                opts.add_argument('--headless')
+            opts.add_argument('--no-sandbox')
+            opts.add_argument('--disable-dev-shm-usage')
+            opts.add_argument('--disable-gpu')
+
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=opts)
+            try:
+                driver.get(novel_url)
+                try:
+                    WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'li.chapter-name')))
+                except Exception:
+                    _time.sleep(1)
+                html = driver.page_source
+                s3 = BeautifulSoup(html, 'html.parser')
+                found = s3.select('li.chapter-name a.truncate') or s3.select('a.chapter-name')
+                chapter_tags = found or chapter_tags
+            finally:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    chapters = []
+    seen = set()
+    for a in chapter_tags:
+        href = a.get('href')
+        if not href:
+            continue
+        full = urljoin(novel_url, href)
+        if full in seen:
+            continue
+        seen.add(full)
+        title = a.get_text(strip=True) or full
+        chapters.append({'title': title, 'url': full})
+
+    return chapters
+
+
+def download_chapters(chapters, progress_callback=None, stop_event=None, output_path=None):
+    """Download a list of chapters (each {'title','url'}) into a single HTML file.
+
+    Returns output_path or None.
+    """
+    def log(msg):
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    if not chapters:
+        log("⚠️ Danh sách chương rỗng.")
+        return None
+
+    # attempt to get book title from first chapter page
+    raw_name = chapters[0].get('title', 'Truyen')
+    try:
+        r = requests.get(chapters[0]['url'], headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        s = BeautifulSoup(r.text, 'html.parser')
+        bt = s.find('p', class_='book-title')
+        if bt:
+            raw_name = bt.get_text(strip=True)
+    except Exception:
+        pass
+
+    clean_name = clean_filename(raw_name)
+    if not output_path:
+        output_path = f"./truyen/{clean_name}.html"
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(f"<html><head><meta charset='utf-8'><title>{raw_name}</title></head><body>\n")
+        f.write(f"<h1>{raw_name}</h1>\n")
+
+    total = len(chapters)
+    for idx, ch in enumerate(chapters, start=1):
+        if stop_event and stop_event.is_set():
+            log('⏹️ Đã hủy bởi người dùng.')
+            break
+        try:
+            log(f"🔄 Đang tải chương {idx}/{total}: {ch.get('title')}")
+            resp = requests.get(ch['url'], headers=HEADERS, timeout=10)
+            if resp.status_code != 200:
+                log(f"❌ Lỗi tải chương (Code {resp.status_code}): {ch['url']}")
+                continue
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            chap_title_tag = soup.find('a', class_='chapter-name') or soup.find(['h1','h2','h3'])
+            chap_title = chap_title_tag.get_text(strip=True) if chap_title_tag else ch.get('title')
+
+            content_div = soup.find('div', id='bookContentBody') or soup.find('div', class_='chapter-content') or soup.find('div', class_='entry-content')
+            content_html = content_div.decode_contents() if content_div else '<p>(Không tìm thấy nội dung)</p>'
+
+            with open(output_path, 'a', encoding='utf-8') as f:
+                f.write(f"<h2>{chap_title}</h2>\n")
+                f.write(content_html)
+                f.write('\n<hr/>\n')
+
+            time.sleep(random.uniform(1.5, 3.0))
+        except Exception as e:
+            log(f"❌ Lỗi khi tải/chèn chương: {e}")
+            continue
+
+    with open(output_path, 'a', encoding='utf-8') as f:
+        f.write('</body></html>')
+    log(f"🎉 XONG! Truyện đã lưu tại: {output_path}")
+    return output_path
+
+def download_novel(start_url, progress_callback=None, stop_event=None):
+    """Download the novel starting from start_url.
+
+    progress_callback: optional function(message: str) called for each log line.
+    """
+    def log(msg):
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    current_url = start_url
     chapter_count = 0
     output_filename = None 
     
-    print(f"🚀 Đang kết nối tới: {current_url}")
+    log(f"🚀 Đang kết nối tới: {current_url}")
 
     while current_url:
+        if stop_event and stop_event.is_set():
+            log("⏹️ Đã hủy bởi người dùng.")
+            break
         try:
             response = requests.get(current_url, headers=HEADERS, timeout=10)
             
@@ -40,28 +308,24 @@ def download_novel():
                 if book_title_tag:
                     raw_name = book_title_tag.get_text(strip=True)
                     clean_name = clean_filename(raw_name)
-                    output_filename = f"{clean_name}.html"
-                    print(f"📖 Phát hiện tên truyện: {raw_name}")
-                    print(f"💾 Sẽ lưu vào file: {output_filename}")
+                    output_filename = f"./truyen/{clean_name}.html"
+                    log(f"📖 Phát hiện tên truyện: {raw_name}")
+                    log(f"💾 Sẽ lưu vào file: {output_filename}")
                 else:
-                    # Fallback nếu không tìm thấy
+                    raw_name = "Truyen Wikidich"
                     output_filename = "Truyen_Wikidich.html"
-                    print("⚠️ Không tìm thấy tên truyện, dùng tên mặc định.")
+                    log("⚠️ Không tìm thấy tên truyện, dùng tên mặc định.")
 
-                # Tạo file mới và viết Header HTML
                 with open(output_filename, "w", encoding="utf-8") as f:
                     f.write(f"<html><head><meta charset='utf-8'><title>{raw_name}</title></head><body>\n")
-                    f.write(f"<h1 style='text-align:center; color:blue;'>{raw_name}</h1>\n") # Tiêu đề to đùng đầu sách
+                    f.write(f"<h1 style='text-align:center; color:blue;'>{raw_name}</h1>\n")
 
-            # Lấy tiêu đề chương hiện tại
             chap_tag = soup.find('a', class_='chapter-name')
             if not chap_tag:
-                 # Nếu không có thì tìm thẻ khác
                  chap_tag = soup.find('p', class_='book-title', style=lambda v: v and '1.2rem' in v)
             
             chapter_title = chap_tag.get_text(strip=True) if chap_tag else f"Chương {chapter_count + 1}"
 
-            # Lấy nội dung
             content_div = soup.find('div', id='bookContentBody')
             
             if content_div:
@@ -71,37 +335,37 @@ def download_novel():
                         f.write(f"<p>{p.get_text()}</p>\n")
                     f.write("<hr/>\n")
                 
-                print(f"✅ Đã tải: {chapter_title}")
+                log(f"✅ Đã tải: {chapter_title}")
                 chapter_count += 1
             else:
-                print(f"⚠️ Không lấy được nội dung chương này: {current_url}")
+                log(f"⚠️ Không lấy được nội dung chương này: {current_url}")
 
-            # Tìm link chương sau
             next_btn = soup.find('a', id='btnNextChapter')
-            
+
             if next_btn and 'href' in next_btn.attrs:
                 next_link = next_btn['href']
                 if "javascript" in next_link or not next_link:
-                    print("🏁 Đã đến chương cuối.")
+                    log("🏁 Đã đến chương cuối.")
                     break
                 current_url = urljoin("https://truyenwikidich.net", next_link)
             else:
-                print("🏁 Không thấy nút chương sau. Kết thúc.")
+                log("🏁 Không thấy nút chương sau. Kết thúc.")
                 break
 
-            # Sleep
             sleep_time = random.uniform(2, 4)
+            if stop_event and stop_event.is_set():
+                log("⏹️ Đã hủy bởi người dùng.")
+                break
             time.sleep(sleep_time)
 
         except Exception as e:
-            print(f"❌ Lỗi: {e}")
+            log(f"❌ Lỗi: {e}")
             break
 
-    # Đóng thẻ HTML khi hết
     if output_filename:
         with open(output_filename, "a", encoding="utf-8") as f:
             f.write("</body></html>")
-        print(f"\n🎉 XONG! Truyện đã lưu tại: {output_filename}")
+        log(f"\n🎉 XONG! Truyện đã lưu tại: {output_filename}")
 
 if __name__ == "__main__":
-    download_novel()
+    download_novel(START_URL)
