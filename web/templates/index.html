@@ -5,44 +5,62 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>toolTruyen - Web UI</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
   <div class="container">
     <header>
-      <h1>toolTruyen</h1>
-      <p class="subtitle">Downloader</p>
+      <div class="logo-area">
+        <i class="fas fa-book-reader fa-2x"></i>
+        <div>
+          <h1>toolTruyen</h1>
+          <p class="subtitle">Premium Novel Downloader</p>
+        </div>
+      </div>
     </header>
 
     <main>
-      <label for="novelUrl">Link truyện (trang danh sách chương hoặc trang truyện):</label>
-      <input id="novelUrl" type="text" placeholder="https://..." />
-
-      <div class="buttons">
-        <button id="loadChaptersBtn">Load chapters</button>
-        <button id="startBtn" disabled>Start</button>
-        <button id="stopBtn" disabled>Stop</button>
-        <button id="clearLogBtn">Clear log</button>
+      <div class="input-card">
+        <label for="novelUrl">Link truyện (trang danh sách chương hoặc trang truyện):</label>
+        <div class="input-group">
+          <input id="novelUrl" type="text" placeholder="https://truyenwikidich.net/truyen/..." />
+          <button id="loadChaptersBtn" class="primary-btn"><i class="fas fa-sync-alt"></i> Load chapters</button>
+        </div>
       </div>
 
-      <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
-        <div><strong>Tổng chương:</strong> <span id="totalCount">0</span></div>
-        <div style="flex:1">
-          <label>Chọn khoảng chương</label>
-          <div style="display:flex; gap:8px;">
-            <select id="startSel" style="flex:1"></select>
-            <select id="endSel" style="flex:1"></select>
+      <div class="stats-card" id="statsCard" style="display:none;">
+        <div class="stat-item">
+          <span class="stat-label">Tổng chương</span>
+          <span class="stat-value" id="totalCount">0</span>
+        </div>
+        <div class="selection-area">
+          <label>Chọn khoảng chương tải về</label>
+          <div class="select-group">
+            <select id="startSel"></select>
+            <span class="to-label">đến</span>
+            <select id="endSel"></select>
           </div>
         </div>
       </div>
 
-      <section>
-        <h2>Log</h2>
-        <div id="log" class="log"></div>
+      <div class="action-buttons">
+        <button id="startBtn" class="success-btn" disabled><i class="fas fa-download"></i> Bắt đầu tải</button>
+        <button id="stopBtn" class="danger-btn" disabled><i class="fas fa-stop"></i> Dừng lại</button>
+        <button id="clearLogBtn" class="secondary-btn"><i class="fas fa-trash-alt"></i> Xóa Log</button>
+      </div>
+
+      <section class="log-section">
+        <div class="section-header">
+          <h2><i class="fas fa-terminal"></i> Tiến trình thực hiện</h2>
+          <span id="jobStatus" class="badge">Sẵn sàng</span>
+        </div>
+        <div id="log" class="log-container"></div>
       </section>
     </main>
 
     <footer>
-      <small>thanhtrug</small>
+      <p>Made with <i class="fas fa-heart" style="color:#ff4d4d"></i> for truyenwikidich users</p>
+      <small>v2.0.0 &copy; 2026 thanhtrug</small>
     </footer>
   </div>
 
@@ -52,27 +70,54 @@ let pollTimer = null;
 
 function log(msg){
   const el = document.getElementById('log');
-  el.textContent += msg + "\n";
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  
+  if(msg.includes('❌')) line.classList.add('log-error');
+  if(msg.includes('✅')) line.classList.add('log-success');
+  if(msg.includes('ℹ️')) line.classList.add('log-info');
+  if(msg.includes('🔄')) line.classList.add('log-process');
+  
+  line.innerHTML = `<span class="timestamp">${new Date().toLocaleTimeString()}</span> ${msg}`;
+  el.appendChild(line);
   el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, type='default'){
+  const badge = document.getElementById('jobStatus');
+  badge.textContent = text;
+  badge.className = 'badge ' + type;
 }
 
 document.getElementById('loadChaptersBtn').addEventListener('click', async ()=>{
   const url = document.getElementById('novelUrl').value.trim();
   if(!url){ alert('Nhập URL'); return; }
+  
+  const btn = document.getElementById('loadChaptersBtn');
+  btn.classList.add('loading');
+  btn.disabled = true;
+  
   log('⏳ Đang tải danh sách chương...');
+  setStatus('Đang tải...', 'process');
+
   try{
     const res = await fetch('/chapters', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({url})
     });
     const data = await res.json();
-    if(!res.ok){ log('❌ ' + (data.error || 'Lỗi')); return; }
+    if(!res.ok){ 
+      log('❌ ' + (data.error || 'Lỗi')); 
+      setStatus('Lỗi', 'danger');
+      return; 
+    }
     const chapters = data.chapters || [];
     const startSel = document.getElementById('startSel');
     const endSel = document.getElementById('endSel');
     startSel.innerHTML = '';
     endSel.innerHTML = '';
     document.getElementById('totalCount').textContent = (data.total || chapters.length);
+    
     chapters.forEach(c=>{
       const opt = document.createElement('option');
       opt.value = c.index;
@@ -80,16 +125,24 @@ document.getElementById('loadChaptersBtn').addEventListener('click', async ()=>{
       startSel.appendChild(opt.cloneNode(true));
       endSel.appendChild(opt.cloneNode(true));
     });
+
     if(chapters.length>0){
+      document.getElementById('statsCard').style.display = 'flex';
       startSel.selectedIndex = 0;
       endSel.selectedIndex = chapters.length-1;
       document.getElementById('startBtn').disabled = false;
       log(`✅ Tìm thấy ${chapters.length} chương.`);
+      setStatus('Sẵn sàng', 'success');
     } else {
       log('⚠️ Không tìm thấy chương.');
+      setStatus('Trống', 'warning');
     }
   }catch(err){
     log('❌ Lỗi khi load chapters: ' + err);
+    setStatus('Lỗi kết nối', 'danger');
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
   }
 });
 
@@ -98,31 +151,43 @@ document.getElementById('startBtn').addEventListener('click', async ()=>{
   if(!url){ alert('Nhập URL'); return; }
   const start = document.getElementById('startSel').value;
   const end = document.getElementById('endSel').value;
-  log('▶️ Bắt đầu job...');
+  
+  log('▶️ Bắt đầu tiến trình tải về...');
+  setStatus('Đang tải truyện...', 'process');
+
   try{
     const res = await fetch('/start', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({url, start: parseInt(start), end: parseInt(end)})
     });
     const data = await res.json();
-    if(!res.ok){ log('❌ ' + (data.error || 'Lỗi start')); return; }
+    if(!res.ok){ 
+      log('❌ ' + (data.error || 'Lỗi start')); 
+      setStatus('Lỗi', 'danger');
+      return; 
+    }
     currentJob = data.job_id;
     document.getElementById('stopBtn').disabled = false;
     document.getElementById('startBtn').disabled = true;
+    document.getElementById('loadChaptersBtn').disabled = true;
     pollLogs();
   }catch(err){
     log('❌ Lỗi khi start: ' + err);
+    setStatus('Lỗi', 'danger');
   }
 });
 
 document.getElementById('stopBtn').addEventListener('click', async ()=>{
   if(!currentJob) return;
   await fetch('/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({job: currentJob})});
-  log('⏹️ Stop requested.');
+  log('⏹️ Yêu cầu dừng đã được gửi.');
+  setStatus('Đang dừng...', 'warning');
   document.getElementById('stopBtn').disabled = true;
 });
 
-document.getElementById('clearLogBtn').addEventListener('click', ()=>{ document.getElementById('log').innerText = ''; });
+document.getElementById('clearLogBtn').addEventListener('click', ()=>{ 
+  document.getElementById('log').innerHTML = ''; 
+});
 
 async function pollLogs(){
   if(!currentJob) return;
@@ -132,10 +197,12 @@ async function pollLogs(){
     if(res.ok && data.logs){
       for(const it of data.logs){
         if(it === '__DONE__'){
-          log('✅ Job hoàn tất.');
+          log('✅ Hoàn thành tải xuống!');
+          setStatus('Hoàn tất', 'success');
           currentJob = null;
           document.getElementById('stopBtn').disabled = true;
           document.getElementById('startBtn').disabled = false;
+          document.getElementById('loadChaptersBtn').disabled = false;
           return;
         }
         log(it);
@@ -147,24 +214,20 @@ async function pollLogs(){
   setTimeout(pollLogs, 1000);
 }
 
-function updateEndOptions(){
-  const startVal = parseInt(document.getElementById('startSel').value || '1', 10);
+document.getElementById('startSel').addEventListener('change', function(){
+  const startVal = parseInt(this.value, 10);
   const endSel = document.getElementById('endSel');
-  for(let i=0;i<endSel.options.length;i++){
-    const opt = endSel.options[i];
-    const v = parseInt(opt.value, 10);
-    opt.disabled = v < startVal;
-  }
-  if(parseInt(endSel.value || '0', 10) < startVal){
+  if(parseInt(endSel.value, 10) < startVal){
     endSel.value = String(startVal);
   }
-}
+});
 
-document.getElementById('startSel').addEventListener('change', updateEndOptions);
 document.getElementById('endSel').addEventListener('change', function(){
-  const sv = parseInt(document.getElementById('startSel').value||'1',10);
-  const ev = parseInt(this.value||'1',10);
-  if(ev < sv) this.value = sv;
+  const startVal = parseInt(document.getElementById('startSel').value, 10);
+  const endVal = parseInt(this.value, 10);
+  if(endVal < startVal){
+    this.value = String(startVal);
+  }
 });
 </script>
 </body>
