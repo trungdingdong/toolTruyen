@@ -5,3 +5,10 @@ lxml
 html5lib
 selenium
 webdriver-manager
+beautifulsoup4
+flask
+html5lib
+lxml
+requests
+selenium
+webdriver-manager
