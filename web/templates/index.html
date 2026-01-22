@@ -46,6 +46,7 @@
       <div class="action-buttons">
         <button id="startBtn" class="success-btn" disabled><i class="fas fa-download"></i> Bắt đầu tải</button>
         <button id="stopBtn" class="danger-btn" disabled><i class="fas fa-stop"></i> Dừng lại</button>
+        <button id="downloadFinishedBtn" class="primary-btn" style="display:none;"><i class="fas fa-file-export"></i> Tải về file kết quả</button>
         <button id="clearLogBtn" class="secondary-btn"><i class="fas fa-trash-alt"></i> Xóa Log</button>
       </div>
 
@@ -67,6 +68,7 @@
 <script>
 let currentJob = null;
 let pollTimer = null;
+let downloadUrl = null;
 
 function log(msg){
   const el = document.getElementById('log');
@@ -89,6 +91,10 @@ function setStatus(text, type='default'){
   badge.className = 'badge ' + type;
 }
 
+document.getElementById('downloadFinishedBtn').addEventListener('click', () => {
+  if(downloadUrl) window.location.href = downloadUrl;
+});
+
 document.getElementById('loadChaptersBtn').addEventListener('click', async ()=>{
   const url = document.getElementById('novelUrl').value.trim();
   if(!url){ alert('Nhập URL'); return; }
@@ -96,6 +102,10 @@ document.getElementById('loadChaptersBtn').addEventListener('click', async ()=>{
   const btn = document.getElementById('loadChaptersBtn');
   btn.classList.add('loading');
   btn.disabled = true;
+  
+  // Hide previous download button
+  document.getElementById('downloadFinishedBtn').style.display = 'none';
+  downloadUrl = null;
   
   log('⏳ Đang tải danh sách chương...');
   setStatus('Đang tải...', 'process');
@@ -194,18 +204,29 @@ async function pollLogs(){
   try{
     const res = await fetch('/logs?job=' + encodeURIComponent(currentJob));
     const data = await res.json();
-    if(res.ok && data.logs){
-      for(const it of data.logs){
-        if(it === '__DONE__'){
-          log('✅ Hoàn thành tải xuống!');
-          setStatus('Hoàn tất', 'success');
-          currentJob = null;
-          document.getElementById('stopBtn').disabled = true;
-          document.getElementById('startBtn').disabled = false;
-          document.getElementById('loadChaptersBtn').disabled = false;
-          return;
+    
+    if(res.ok){
+      if(data.download_url) {
+        downloadUrl = data.download_url;
+      }
+      
+      if(data.logs){
+        for(const it of data.logs){
+          if(it === '__DONE__'){
+            log('✅ Hoàn thành tải xuống!');
+            setStatus('Hoàn tất', 'success');
+            currentJob = null;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('loadChaptersBtn').disabled = false;
+            
+            if(downloadUrl) {
+              document.getElementById('downloadFinishedBtn').style.display = 'inline-flex';
+            }
+            return;
+          }
+          log(it);
         }
-        log(it);
       }
     }
   }catch(e){

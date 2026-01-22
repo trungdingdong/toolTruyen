@@ -3,7 +3,7 @@ import sys
 import threading
 import uuid
 from queue import Queue, Empty
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 
 # Ensure project root (parent of web/) is on sys.path so we can import main.py
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,12 +15,17 @@ from main import download_novel, get_chapter_list, download_chapters
 
 app = Flask(__name__)
 
-# job store: job_id -> {thread, queue, stop_event}
+# job store: job_id -> {thread, queue, stop_event, output_file}
 jobs = {}
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/download/<path:filename>')
+def download_file(filename):
+    directory = os.path.join(ROOT_DIR, 'truyen')
+    return send_from_directory(directory, filename, as_attachment=True)
 
 @app.route('/start', methods=['POST'])
 def start():
@@ -62,14 +67,19 @@ def start():
             q.put(f"ℹ️ Tải từ chương {s} đến {e} (tổng {total}).")
             # gọi hàm download_chapters để tải danh sách
             output = download_chapters(slice_list, progress_callback=progress, stop_event=stop_event)
-            q.put(f"🔚 Kết thúc. File: {output}" if output else "🔚 Kết thúc.")
+            if output:
+                filename = os.path.basename(output)
+                jobs[job_id]['output_file'] = filename
+                q.put(f"🔚 Kết thúc. File: {output}")
+            else:
+                q.put("🔚 Kết thúc.")
         except Exception as ex:
             q.put(f"❌ Lỗi khi bắt đầu download: {ex}")
         finally:
             q.put('__DONE__')
 
     t = threading.Thread(target=worker, daemon=True)
-    jobs[job_id] = {'thread': t, 'queue': q, 'stop': stop_event}
+    jobs[job_id] = {'thread': t, 'queue': q, 'stop': stop_event, 'output_file': None}
     t.start()
     return jsonify({'job_id': job_id})
 
@@ -100,7 +110,12 @@ def logs():
             items.append(q.get_nowait())
     except Exception:
         pass
-    return jsonify({'logs': items})
+    
+    response = {'logs': items}
+    if jobs[job_id].get('output_file'):
+        response['download_url'] = f"/download/{jobs[job_id]['output_file']}"
+        
+    return jsonify(response)
 
 @app.route('/stop', methods=['POST'])
 def stop():
