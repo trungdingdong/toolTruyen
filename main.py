@@ -16,6 +16,9 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Referer': 'https://truyenwikidich.net/'
 }
+
+# Supported sites that use JS-rendered chapter lists
+SUPPORTED_WIKI_SITES = ['truyenwikidich.net', 'wikicv.net', 'wikidich.net']
 # ============================================
 
 def clean_filename(name):
@@ -69,10 +72,10 @@ def get_chapter_list(novel_url):
     # If only 1 or 0 chapters found, it's likely a placeholder — try AJAX / Selenium
     needs_more_fallback = len(chapter_tags) <= 1
     
-    # For truyenwikidich.net, ALWAYS try AJAX because initial selectors find navigation links, not real chapters
-    is_truyenwikidich = 'truyenwikidich.net' in novel_url
-    if is_truyenwikidich:
-        needs_more_fallback = True  # Force AJAX approach
+    # For wiki sites (truyenwikidich, wikicv, wikidich), ALWAYS try Selenium because chapters are JS-rendered
+    is_wiki_site = any(site in novel_url for site in SUPPORTED_WIKI_SITES)
+    if is_wiki_site:
+        needs_more_fallback = True  # Force Selenium approach
         chapter_tags = []  # Clear navigation links
 
     # If still nothing (or just 1 placeholder), try to call the site's AJAX endpoint.
@@ -270,6 +273,138 @@ def download_chapters(chapters, progress_callback=None, stop_event=None, output_
     log(f"🎉 XONG! Truyện đã lưu tại: {output_path}")
     return output_path
 
+
+def download_chapters_epub(chapters, progress_callback=None, stop_event=None, output_path=None):
+    """Download chapters and create EPUB file with proper chapter structure for Kindle.
+    
+    Each chapter becomes a separate section in the EPUB with Table of Contents.
+    """
+    from ebooklib import epub
+    
+    def log(msg):
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
+
+    if not chapters:
+        log("⚠️ Danh sách chương rỗng.")
+        return None
+
+    # Get book title from first chapter page
+    raw_name = chapters[0].get('title', 'Truyen')
+    try:
+        r = requests.get(chapters[0]['url'], headers=HEADERS, timeout=10)
+        r.raise_for_status()
+        s = BeautifulSoup(r.text, 'html.parser')
+        bt = s.find('p', class_='book-title')
+        if bt:
+            raw_name = bt.get_text(strip=True)
+    except Exception:
+        pass
+
+    clean_name = clean_filename(raw_name)
+    if not output_path:
+        output_path = f"./truyen/{clean_name}.epub"
+    
+    # Ensure .epub extension
+    if not output_path.endswith('.epub'):
+        output_path = output_path.rsplit('.', 1)[0] + '.epub'
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+    # Create EPUB book
+    book = epub.EpubBook()
+    book.set_identifier(f'id_{clean_name}_{random.randint(1000,9999)}')
+    book.set_title(raw_name)
+    book.set_language('vi')
+    book.add_author('Truyện Wiki Dịch')
+
+    # CSS for chapters
+    style = '''
+    body { font-family: Georgia, serif; line-height: 1.6; margin: 1em; }
+    h1, h2 { text-align: center; margin-bottom: 1em; }
+    p { text-indent: 1.5em; margin: 0.5em 0; }
+    '''
+    nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
+    book.add_item(nav_css)
+
+    epub_chapters = []
+    toc = []
+    spine = ['nav']
+
+    total = len(chapters)
+    for idx, ch in enumerate(chapters, start=1):
+        if stop_event and stop_event.is_set():
+            log('⏹️ Đã hủy bởi người dùng.')
+            break
+        try:
+            log(f"🔄 Đang tải chương {idx}/{total}: {ch.get('title')}")
+            resp = requests.get(ch['url'], headers=HEADERS, timeout=10)
+            if resp.status_code != 200:
+                log(f"❌ Lỗi tải chương (Code {resp.status_code}): {ch['url']}")
+                continue
+            
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            chap_title_tag = soup.find('a', class_='chapter-name') or soup.find(['h1','h2','h3'])
+            chap_title = chap_title_tag.get_text(strip=True) if chap_title_tag else ch.get('title')
+
+            content_div = soup.find('div', id='bookContentBody') or soup.find('div', class_='chapter-content') or soup.find('div', class_='entry-content')
+            
+            # Clean content - keep only text paragraphs
+            if content_div:
+                # Remove scripts, styles
+                for tag in content_div.find_all(['script', 'style', 'iframe']):
+                    tag.decompose()
+                content_html = content_div.decode_contents()
+            else:
+                content_html = '<p>(Không tìm thấy nội dung)</p>'
+
+            # Create EPUB chapter
+            chapter_file = epub.EpubHtml(title=chap_title, file_name=f'chap_{idx:04d}.xhtml', lang='vi')
+            chapter_file.content = f'''
+            <html xmlns="http://www.w3.org/1999/xhtml">
+            <head><title>{chap_title}</title></head>
+            <body>
+                <h2>{chap_title}</h2>
+                {content_html}
+            </body>
+            </html>
+            '''
+            chapter_file.add_item(nav_css)
+            
+            book.add_item(chapter_file)
+            epub_chapters.append(chapter_file)
+            toc.append(epub.Link(f'chap_{idx:04d}.xhtml', chap_title, f'chap_{idx}'))
+            spine.append(chapter_file)
+
+            time.sleep(random.uniform(1.5, 3.0))
+        except Exception as e:
+            log(f"❌ Lỗi khi tải chương: {e}")
+            continue
+
+    # Create Table of Contents
+    book.toc = toc
+    
+    # Add navigation files
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    
+    # Set spine (reading order)
+    book.spine = spine
+
+    # Write EPUB file
+    epub.write_epub(output_path, book, {})
+    
+    log(f"🎉 XONG! EPUB đã lưu tại: {output_path}")
+    log(f"📚 Tổng số chương: {len(epub_chapters)}")
+    log(f"💡 File EPUB này có mục lục, Kindle sẽ hiển thị từng chương riêng biệt!")
+    return output_path
+
+
 def download_novel(start_url, progress_callback=None, stop_event=None):
     """Download the novel starting from start_url.
 
@@ -340,14 +475,31 @@ def download_novel(start_url, progress_callback=None, stop_event=None):
             else:
                 log(f"⚠️ Không lấy được nội dung chương này: {current_url}")
 
+            # Find next chapter button - try multiple selectors for different sites
+            # wikicv.net uses: a.btn-bot (the ">" button)
+            # truyenwikidich.net uses: a#btnNextChapter
             next_btn = soup.find('a', id='btnNextChapter')
+            
+            if not next_btn:
+                # wikicv.net: find the second btn-bot (first is "Mục lục", second is ">")
+                btn_bots = soup.select('a.btn-bot')
+                for btn in btn_bots:
+                    # Look for the ">" button (next chapter)
+                    icon = btn.find('i', class_='fa-angle-right')
+                    if icon:
+                        next_btn = btn
+                        break
+                # If still not found, try the last btn-bot (often the next button)
+                if not next_btn and len(btn_bots) >= 2:
+                    next_btn = btn_bots[-1]
 
             if next_btn and 'href' in next_btn.attrs:
                 next_link = next_btn['href']
                 if "javascript" in next_link or not next_link:
                     log("🏁 Đã đến chương cuối.")
                     break
-                current_url = urljoin("https://truyenwikidich.net", next_link)
+                # Use the correct base URL based on current URL
+                current_url = urljoin(current_url, next_link)
             else:
                 log("🏁 Không thấy nút chương sau. Kết thúc.")
                 break

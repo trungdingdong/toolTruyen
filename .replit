@@ -27,7 +27,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python web/app.py"
+args = "rm -rf __pycache__ web/__pycache__ && python web/app.py"
 waitForPort = 5000
 
 [[ports]]

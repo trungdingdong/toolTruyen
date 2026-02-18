@@ -11,7 +11,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 # import the downloader from main
-from main import download_novel, get_chapter_list, download_chapters
+from main import download_novel, get_chapter_list, download_chapters, download_chapters_epub
 
 app = Flask(__name__)
 
@@ -33,6 +33,7 @@ def start():
     url = data.get('url')
     start_idx = data.get('start')  # 1-based
     end_idx = data.get('end')      # 1-based
+    output_format = data.get('format', 'html')  # 'html' or 'epub'
     if not url:
         return jsonify({'error': 'missing url'}), 400
 
@@ -65,8 +66,14 @@ def start():
 
             slice_list = chap_list[s-1:e]  # zero-based slice
             q.put(f"ℹ️ Tải từ chương {s} đến {e} (tổng {total}).")
-            # gọi hàm download_chapters để tải danh sách
-            output = download_chapters(slice_list, progress_callback=progress, stop_event=stop_event)
+            q.put(f"📁 Định dạng xuất: {output_format.upper()}")
+            
+            # Chọn hàm download theo format
+            if output_format == 'epub':
+                output = download_chapters_epub(slice_list, progress_callback=progress, stop_event=stop_event)
+            else:
+                output = download_chapters(slice_list, progress_callback=progress, stop_event=stop_event)
+            
             if output:
                 filename = os.path.basename(output)
                 jobs[job_id]['output_file'] = filename

@@ -14,7 +14,6 @@
         <i class="fas fa-book-reader fa-2x"></i>
         <div>
           <h1>toolTruyen</h1>
-          <p class="subtitle">Premium Novel Downloader</p>
         </div>
       </div>
     </header>
@@ -29,16 +28,31 @@
       </div>
 
       <div class="stats-card" id="statsCard" style="display:none;">
-        <div class="stat-item">
-          <span class="stat-label">Tổng chương</span>
-          <span class="stat-value" id="totalCount">0</span>
+        <div class="stats-row">
+          <div class="stat-item">
+            <span class="stat-label">Tổng chương</span>
+            <span class="stat-value" id="totalCount">0</span>
+          </div>
+          <div class="selection-area">
+            <label>Chọn khoảng chương tải về</label>
+            <div class="select-group">
+              <select id="startSel"></select>
+              <span class="to-label">đến</span>
+              <select id="endSel"></select>
+            </div>
+          </div>
         </div>
-        <div class="selection-area">
-          <label>Chọn khoảng chương tải về</label>
-          <div class="select-group">
-            <select id="startSel"></select>
-            <span class="to-label">đến</span>
-            <select id="endSel"></select>
+        <div class="format-area">
+          <label>Định dạng xuất:</label>
+          <div class="format-group">
+            <label class="format-option">
+              <input type="radio" name="outputFormat" value="html">
+              <span class="format-label"><i class="fas fa-file-code"></i> HTML</span>
+            </label>
+            <label class="format-option">
+              <input type="radio" name="outputFormat" value="epub" checked>
+              <span class="format-label"><i class="fas fa-tablet-alt"></i> EPUB (Kindle)</span>
+            </label>
           </div>
         </div>
       </div>
@@ -161,14 +175,17 @@ document.getElementById('startBtn').addEventListener('click', async ()=>{
   if(!url){ alert('Nhập URL'); return; }
   const start = document.getElementById('startSel').value;
   const end = document.getElementById('endSel').value;
+  const formatRadio = document.querySelector('input[name="outputFormat"]:checked');
+  const format = formatRadio ? formatRadio.value : 'html';
   
   log('▶️ Bắt đầu tiến trình tải về...');
+  log(`📁 Định dạng: ${format.toUpperCase()}`);
   setStatus('Đang tải truyện...', 'process');
 
   try{
     const res = await fetch('/start', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({url, start: parseInt(start), end: parseInt(end)})
+      body: JSON.stringify({url, start: parseInt(start), end: parseInt(end), format: format})
     });
     const data = await res.json();
     if(!res.ok){ 
